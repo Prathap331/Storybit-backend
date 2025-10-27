@@ -164,10 +164,11 @@ class PromptRequest(BaseModel):
 async def read_root(): return {"status": "Welcome"}
 
 @app.post("/process-topic")
-async def process_topic(request: PromptRequest, background_tasks: BackgroundTasks,current_user: User = Depends(get_current_user)):
+async def process_topic(request: PromptRequest, background_tasks: BackgroundTasks):
     total_start_time = time.time()
-    user_id = current_user.id
-    print(f"Received topic from user ({user_id}): {request.topic}")
+    #user_id = current_user.id
+    print(f"Received topic from user : {request.topic}")
+    '''
     # --- NEW: Credit Check Logic ---
     IDEA_COST = 1 # Define the cost for this specific action
     try:
@@ -194,7 +195,7 @@ async def process_topic(request: PromptRequest, background_tasks: BackgroundTask
     except Exception as e:
          print(f"Unexpected Error checking credits: {e}")
          raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error checking profile.")
-    # --------------------------------
+    # --------------------------------'''
     
     try:
         db_task = asyncio.create_task(get_db_context(request.topic))
@@ -337,7 +338,7 @@ async def process_topic(request: PromptRequest, background_tasks: BackgroundTask
         
 
 
-
+        '''
         # --- <<< CREDIT DECREMENT LOGIC >>> ---
         # Ensure 'user_tier' and 'credits' were fetched successfully earlier in the function
         if 'user_tier' in locals() and user_tier != 'admin':
@@ -378,6 +379,7 @@ async def process_topic(request: PromptRequest, background_tasks: BackgroundTask
             # This case indicates an issue earlier in the function
             print(f"WARN: Could not decrement credits for user {user_id}. User tier or initial credit count not available.")
         # --- <<< END CREDIT DECREMENT LOGIC >>> ---
+        '''
 
 
 
