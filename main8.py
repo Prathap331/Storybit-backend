@@ -23,6 +23,11 @@ from nltk.tokenize import sent_tokenize
 
 import json
 
+from fastapi import Request, Header # Import Request and Header
+import hmac
+import hashlib
+import razorpay
+
 # --- Setup and Configuration (Using your specified models) ---
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
@@ -775,3 +780,163 @@ async def generate_script(request: ScriptRequest, background_tasks: BackgroundTa
     except Exception as e:
         print(f"SCRIPT GENERATION: An error occurred: {e}")
         return {"error": "An error occurred during the script generation pipeline."}
+
+
+
+
+class CreateOrderRequest(BaseModel):
+    amount: int # Amount in paisa (e.g., 50000 for ₹500.00)
+    currency: str = "INR"
+    receipt: str | None = None # Optional unique receipt ID from your system
+    target_tier: str # 'basic' or 'pro' - needed to calculate amount
+
+# Endpoint to create a Razorpay order
+@app.post("/payments/create-order")
+async def create_razorpay_order(
+    request_data: CreateOrderRequest,
+    current_user: User = Depends(get_current_user)
+):
+    if not razorpay_client:
+        raise HTTPException(status_code=503, detail="Payment service unavailable.")
+
+    user_id = current_user.id
+    amount = request_data.amount # Amount should be sent from frontend based on selected tier
+    currency = request_data.currency
+
+    # Basic validation (add more as needed)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Invalid amount.")
+    if request_data.target_tier not in ['basic', 'pro']:
+         raise HTTPException(status_code=400, detail="Invalid target tier specified.")
+
+    order_data = {
+        "amount": amount,
+        "currency": currency,
+        #"receipt": request_data.receipt or f"receipt_{user_id}_{int(time.time())}", 
+        "receipt": request_data.receipt or f"rec_{int(time.time())}", # Shorter default receipt
+        # Generate a receipt if none provided
+        "notes": { # Store extra info like user ID and target tier
+            "user_id": str(user_id),
+            "target_tier": request_data.target_tier
+        }
+    }
+
+    try:
+        order = razorpay_client.order.create(data=order_data)
+        print(f"Created Razorpay order {order['id']} for user {user_id}")
+        # Return the order ID and key ID to the frontend
+        return {"order_id": order['id'], "key_id": RAZORPAY_KEY_ID, "amount": amount, "currency": currency}
+    except Exception as e:
+        print(f"Error creating Razorpay order: {e}")
+        raise HTTPException(status_code=500, detail="Could not create payment order.")
+    
+
+
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
+
+
+# Endpoint for Razorpay Webhook
+@app.post("/payments/webhook")
+async def razorpay_webhook(
+    request: Request,
+    x_razorpay_signature: str | None = Header(None) # Get signature from header
+):
+    if not RAZORPAY_WEBHOOK_SECRET or not razorpay_client:
+        print("Webhook received but service is not configured.")
+        return {"status": "Webhook ignored"} # Don't raise error, just ignore
+
+    body = await request.body() # Get raw body
+
+    # --- 1. Verify Signature ---
+    try:
+        razorpay_client.utility.verify_webhook_signature(
+            body.decode('utf-8'), # Decode body bytes to string
+            x_razorpay_signature,
+            RAZORPAY_WEBHOOK_SECRET
+        )
+        print("Webhook signature verified successfully.")
+    except razorpay.errors.SignatureVerificationError as e:
+        print(f"Webhook signature verification failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+    except Exception as e:
+        print(f"Error during webhook signature verification: {e}")
+        raise HTTPException(status_code=500, detail="Webhook processing error.")
+
+    # --- 2. Process the Event ---
+    try:
+        event_data = json.loads(body)
+        event_type = event_data.get('event')
+
+        print(f"Received webhook event: {event_type}")
+
+        if event_type == 'payment.captured' or event_type == 'order.paid':
+            payment_entity = event_data['payload']['payment']['entity']
+            order_entity = event_data['payload']['order']['entity'] # Get order entity
+
+            order_id = order_entity['id']
+            payment_id = payment_entity['id']
+            amount_paid = order_entity['amount_paid'] # Use amount from order entity
+            notes = order_entity.get('notes', {})
+            user_id = notes.get('user_id')
+            target_tier = notes.get('target_tier')
+
+            print(f"Processing successful payment: {payment_id} for order {order_id}, user {user_id}, tier {target_tier}")
+
+            if not user_id or not target_tier:
+                print(f"ERROR: Missing user_id or target_tier in order notes for order {order_id}.")
+                return {"status": "error", "message": "Missing required order notes."}
+
+            # --- 3. Update User Profile in Supabase ---
+            # Define credits based on tier (example values)
+            credits_to_add = 0
+            if target_tier == 'basic':
+                credits_to_add = 50 # Example: Basic tier gets 50 credits
+            elif target_tier == 'pro':
+                credits_to_add = 200 # Example: Pro tier gets 200 credits
+
+            try:
+                # Fetch current credits first (important for concurrency)
+                profile_response = supabase.table('profiles').select('credits_remaining').eq('id', user_id).single().execute()
+                current_credits = 0
+                if profile_response.data:
+                    current_credits = profile_response.data.get('credits_remaining', 0)
+
+                new_credits = current_credits + credits_to_add
+
+                update_result = supabase.table('profiles').update({
+                    'user_tier': target_tier,
+                    'credits_remaining': new_credits
+                }).eq('id', user_id).execute()
+
+                if update_result.data:
+                    print(f"Successfully updated user {user_id} to tier '{target_tier}' with {new_credits} credits.")
+                else:
+                    print(f"WARN: Failed to update profile for user {user_id} after payment {payment_id}.")
+                    # Consider adding to a retry queue or alerting system
+
+            except APIError as e:
+                print(f"ERROR: Supabase APIError updating profile for user {user_id}: {e}")
+                # Add to retry queue or alert
+            except Exception as e:
+                 print(f"ERROR: Unexpected error updating profile for user {user_id}: {e}")
+                 # Add to retry queue or alert
+
+        elif event_type == 'payment.failed':
+            payment_entity = event_data['payload']['payment']['entity']
+            order_id = payment_entity.get('order_id')
+            print(f"Payment failed for order {order_id}. Reason: {payment_entity.get('error_description')}")
+            # Optionally update your system (e.g., mark order as failed)
+
+        else:
+            print(f"Ignoring unhandled webhook event type: {event_type}")
+
+        # Respond to Razorpay quickly
+        return {"status": "Webhook processed successfully"}
+
+    except json.JSONDecodeError:
+        print("Webhook error: Could not decode JSON body.")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    except Exception as e:
+        print(f"Webhook error: Unexpected error processing event: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error processing webhook.")
+
