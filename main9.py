@@ -241,37 +241,11 @@ class PromptRequest(BaseModel):
 async def read_root(): return {"status": "Welcome"}
 
 @app.post("/process-topic")
-async def process_topic(request: PromptRequest, background_tasks: BackgroundTasks,current_user: User = Depends(get_current_user)):
+async def process_topic(request: PromptRequest, background_tasks: BackgroundTasks):
     total_start_time = time.time()
-    user_id = current_user.id
-    print(f"Received topic from user ({user_id}): {request.topic}")
-    # --- NEW: Credit Check Logic ---
-    IDEA_COST = 1 # Define the cost for this specific action
-    try:
-        profile_response = supabase.table('profiles').select('credits_remaining, user_tier').eq('id', user_id).single().execute()
-        profile = profile_response.data
-        if not profile:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found.")
-
-        credits = profile.get('credits_remaining', 0)
-        user_tier = profile.get('user_tier', 'free')
-
-        # Check if the user has ENOUGH credits for THIS action
-        if user_tier != 'admin' and credits < IDEA_COST:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Insufficient credits. This action requires {IDEA_COST} credit(s). You have {credits}."
-            )
-
-        print(f"User {user_id} (Tier: {user_tier}) has {credits} credits. Action requires {IDEA_COST}.")
-    except APIError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error checking profile: {e.message}")
-    except HTTPException as e: # Re-raise HTTP exceptions from credit check
-        raise e
-    except Exception as e:
-         print(f"Unexpected Error checking credits: {e}")
-         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error checking profile.")
-    # --------------------------------
+    
+    print(f"Received topic from user : {request.topic}")
+    
     
     try:
         db_task = asyncio.create_task(get_db_context(request.topic))
@@ -442,47 +416,6 @@ async def process_topic(request: PromptRequest, background_tasks: BackgroundTask
         
 
 
-
-        # --- <<< CREDIT DECREMENT LOGIC >>> ---
-        # Ensure 'user_tier' and 'credits' were fetched successfully earlier in the function
-        if 'user_tier' in locals() and user_tier != 'admin':
-            try:
-                # Use the 'credits' variable fetched at the start of the function
-                # IDEA_COST should also be defined at the start (e.g., IDEA_COST = 1)
-                new_credit_balance = credits - IDEA_COST
-
-                # Ensure balance doesn't go below zero (optional safety check)
-                if new_credit_balance < 0:
-                    new_credit_balance = 0
-                    print(f"WARN: User {user_id} credit balance would go below zero. Setting to 0.")
-
-                # Update the database
-                update_result = supabase.table('profiles').update(
-                    {'credits_remaining': new_credit_balance}
-                ).eq('id', user_id).execute()
-
-                # Optional: Check if the update was successful
-                if len(update_result.data) > 0:
-                    print(f"Decremented {IDEA_COST} credit(s) for user {user_id}. New balance: {new_credit_balance}")
-                else:
-                    # This might happen if the user was deleted between check and update,
-                    # or if RLS rules prevent the update (less likely with service_role key)
-                    print(f"WARN: Credit decrement query executed for user {user_id} but returned no updated rows.")
-
-            except APIError as e:
-                # Log the error but crucially, DO NOT raise an HTTPException here.
-                # The user already got their result, failing the credit decrement
-                # is an internal issue we should log, not fail the user's request for.
-                print(f"ERROR: Failed to decrement credits for user {user_id}. DB Error: {e.message}")
-            except Exception as e:
-                # Catch any other unexpected errors during the update
-                print(f"ERROR: An unexpected error occurred during credit decrement for user {user_id}: {e}")
-        elif 'user_tier' in locals() and user_tier == 'admin':
-             print(f"User {user_id} is admin. No credits decremented.")
-        else:
-            # This case indicates an issue earlier in the function
-            print(f"WARN: Could not decrement credits for user {user_id}. User tier or initial credit count not available.")
-        # --- <<< END CREDIT DECREMENT LOGIC >>> ---
 
 
 
