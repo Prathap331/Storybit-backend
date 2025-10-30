@@ -35,12 +35,14 @@ nltk_data_dir = os.path.join(project_root, 'nltk_data')
 # Add this path to NLTK's search list (prepend to prioritize it)
 nltk.data.path.insert(0, nltk_data_dir)
 
-# Verify it works
+# Verify both packages are found
 try:
     nltk.data.find('tokenizers/punkt')
-    print("NLTK 'punkt' data found successfully in project folder.")
-except LookupError:
-    print("!!! CRITICAL ERROR: NLTK 'punkt' data NOT found in project folder. Check copy/paste step. !!!")
+    nltk.data.find('tokenizers/punkt_tab')
+    print("NLTK 'punkt' and 'punkt_tab' data found successfully in project folder.")
+except LookupError as e:
+    print(f"!!! CRITICAL NLTK DATA ERROR: {e} !!!")
+    print("!!! Make sure both 'punkt' and 'punkt_tab' folders are in your nltk_data/tokenizers directory. !!!")
 # -------------------------------------------------
 
 
