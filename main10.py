@@ -922,7 +922,7 @@ async def create_razorpay_order(
 
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
-
+'''
 # Endpoint for Razorpay Webhook
 @app.post("/payments/webhook")
 async def razorpay_webhook(
@@ -1028,3 +1028,116 @@ async def razorpay_webhook(
         print(f"Webhook error: Unexpected error processing event: {e}")
         raise HTTPException(status_code=500, detail="Internal server error processing webhook.")
 
+'''
+
+
+# Endpoint for Razorpay Webhook
+@app.post("/payments/webhook")
+async def razorpay_webhook(
+    request: Request,
+    x_razorpay_signature: str | None = Header(None) # Get signature from header
+):
+    if not RAZORPAY_WEBHOOK_SECRET or not razorpay_client:
+        print("Webhook received but service is not configured.")
+        return {"status": "Webhook ignored"} # Don't raise error, just ignore
+
+    body = await request.body() # Get raw body
+
+    # --- 1. Verify Signature ---
+    try:
+        razorpay_client.utility.verify_webhook_signature(
+            body.decode('utf-8'), # Decode body bytes to string
+            x_razorpay_signature,
+            RAZORPAY_WEBHOOK_SECRET
+        )
+        print("Webhook signature verified successfully.")
+    except razorpay.errors.SignatureVerificationError as e:
+        print(f"Webhook signature verification failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+    except Exception as e:
+        print(f"Error during webhook signature verification: {e}")
+        raise HTTPException(status_code=500, detail="Webhook processing error.")
+
+    # --- 2. Process the Event ---
+    try:
+        event_data = json.loads(body)
+        event_type = event_data.get('event')
+
+        print(f"Received webhook event: {event_type}")
+
+        # --- FIX 1: Only process the 'order.paid' event ---
+        # This event is reliable and contains all the order 'notes' we need.
+        if event_type == 'order.paid':
+            # This logic is now only for 'order.paid'
+            order_entity = event_data['payload']['order']['entity']
+
+            order_id = order_entity['id']
+            # Get payment_id from the payment payload, not the order
+            payment_id = event_data['payload']['payment']['entity']['id'] 
+            notes = order_entity.get('notes', {})
+            user_id = notes.get('user_id')
+            target_tier = notes.get('target_tier')
+
+            print(f"Processing successful payment: {payment_id} for order {order_id}, user {user_id}, tier {target_tier}")
+
+            if not user_id or not target_tier:
+                print(f"ERROR: Missing user_id or target_tier in order notes for order {order_id}.")
+                return {"status": "error", "message": "Missing required order notes."}
+
+            # --- 3. Update User Profile in Supabase ---
+            credits_to_add = 0
+            
+            # --- FIX 2: Add .lower() to make the check case-insensitive ---
+            if target_tier.lower() == 'basic':
+                credits_to_add = 50 # Example: Basic tier gets 50 credits
+            elif target_tier.lower() == 'pro':
+                credits_to_add = 200 # Example: Pro tier gets 200 credits
+            # -------------------------------------------------------------
+
+            try:
+                # Fetch current credits first (important for concurrency)
+                profile_response = supabase.table('profiles').select('credits_remaining').eq('id', user_id).single().execute()
+                current_credits = 0
+                if profile_response.data:
+                    current_credits = profile_response.data.get('credits_remaining', 0)
+
+                new_credits = current_credits + credits_to_add
+
+                update_result = supabase.table('profiles').update({
+                    'user_tier': target_tier,
+                    'credits_remaining': new_credits
+                }).eq('id', user_id).execute()
+
+                if update_result.data:
+                    print(f"Successfully updated user {user_id} to tier '{target_tier}' with {new_credits} credits.")
+                else:
+                    print(f"WARN: Failed to update profile for user {user_id} after payment {payment_id}.")
+                    
+            except APIError as e:
+                print(f"ERROR: Supabase APIError updating profile for user {user_id}: {e}")
+            except Exception as e:
+                 print(f"ERROR: Unexpected error updating profile for user {user_id}: {e}")
+
+        # --- FIX 1 (Continued): Gracefully ignore other events ---
+        elif event_type == 'payment.captured':
+            # This event fires right after 'order.paid' but often lacks the 'order' notes.
+            # We ignore it to prevent errors and double-crediting.
+            print("Ignoring 'payment.captured' event (already handled by 'order.paid').")
+        
+        elif event_type == 'payment.failed':
+            payment_entity = event_data['payload']['payment']['entity']
+            order_id = payment_entity.get('order_id')
+            print(f"Payment failed for order {order_id}. Reason: {payment_entity.get('error_description')}")
+        
+        else:
+            print(f"Ignoring unhandled webhook event type: {event_type}")
+
+        # Respond to Razorpay quickly
+        return {"status": "Webhook processed successfully"}
+
+    except json.JSONDecodeError:
+        print("Webhook error: Could not decode JSON body.")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    except Exception as e:
+        print(f"Webhook error: Unexpected error processing event: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error processing webhook.")
