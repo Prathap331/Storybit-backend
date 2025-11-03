@@ -913,7 +913,7 @@ async def create_razorpay_order(
         order = razorpay_client.order.create(data=order_data)
         print(f"Created Razorpay order {order['id']} for user {user_id}")
         # Return the order ID and key ID to the frontend
-        return {"order_id": order['id'], "key_id": RAZORPAY_KEY_ID, "amount": amount, "currency": currency}
+        return {"order_id": order['id'], "key_id": RAZORPAY_KEY_ID, "amount": amount*100, "currency": currency}
     except Exception as e:
         print(f"Error creating Razorpay order: {e}")
         raise HTTPException(status_code=500, detail="Could not create payment order.")
