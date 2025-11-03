@@ -28,6 +28,8 @@ import hmac
 import hashlib
 import razorpay
 
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # Construct the path to the nltk_data folder within your project
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -257,6 +259,22 @@ async def get_db_context(topic: str) -> list[dict]:
 app = FastAPI()
 class PromptRequest(BaseModel):
     topic: str
+
+
+# --- ADD THIS ENTIRE BLOCK ---
+origins = [
+    "http://localhost:3000", # Your Next.js development server
+    "https://www.storybit.tech/", # Add your deployed Vercel URL here later
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allows all headers (including Authorization)
+)
+# -----------------------------
 
 @app.get("/")
 async def read_root(): return {"status": "Welcome"}
