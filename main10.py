@@ -264,7 +264,8 @@ class PromptRequest(BaseModel):
 # --- ADD THIS ENTIRE BLOCK ---
 origins = [
     "http://localhost:3000", # Your Next.js development server
-    "https://www.storybit.tech/", # Add your deployed Vercel URL here later
+    "https://www.storybit.tech/",
+     "https://storybit.tech/",# Add your deployed Vercel URL here later
 ]
 
 app.add_middleware(
